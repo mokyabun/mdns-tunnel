@@ -7,6 +7,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'docker/build-push-action@v7.4.0'
         - 'docker/setup-buildx-action@v4.4.1'
+        - 'docker/setup-docker-action@v5.7.0'
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/release-binaries.yml':
         - 'actions/attest@v4.2.2'
@@ -74,6 +75,11 @@ dependencies:
         commit: 'sha1-f87e5991a6d7451dcb8d9637bfbc97413f497069'
         owner_id: 5429470
         repo_id: 288485773
+    'docker/setup-docker-action@v5.7.0':
+        ref: 'v5.7.0'
+        commit: 'sha1-3f1ab1ab0e29231562e4db4ca600c1a49653bac6'
+        owner_id: 5429470
+        repo_id: 398780917
     'github/codeql-action@cdf488f595d80d6e07e03d4674febd5ab45fa938':
         ref: 'v4.37.9'
         commit: 'sha1-cdf488f595d80d6e07e03d4674febd5ab45fa938'
