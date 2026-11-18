@@ -10,7 +10,8 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+# Both platforms build in parallel, and cargo's package lock lives outside this mount.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target \
     case "$TARGETARCH" in \
         arm64) target=aarch64-unknown-linux-musl ;; \
