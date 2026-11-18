@@ -1,0 +1,3 @@
+allow-unwrap-in-tests = true
+# Product names in docs, not code; ".." keeps clippy's defaults.
+doc-valid-idents = ["OpenWrt", "HomeKit", "AirPlay", ".."]

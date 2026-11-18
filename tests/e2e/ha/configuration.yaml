@@ -1,0 +1,17 @@
+homeassistant:
+  name: Test
+  time_zone: UTC
+
+http:
+zeroconf:
+
+input_boolean:
+  test_switch:
+    name: Test Switch
+
+homekit:
+  - name: HASS Bridge
+    port: 21063
+    filter:
+      include_entities:
+        - input_boolean.test_switch

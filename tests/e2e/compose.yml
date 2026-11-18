@@ -1,0 +1,83 @@
+# End-to-end test stack: imitates the LAN, the WireGuard link and HA's Docker network.
+# See docs/testing.md.
+name: mdns-tunnel-e2e
+
+networks:
+  lan:
+    ipam:
+      config: [{ subnet: 10.91.1.0/24 }]
+  wg:
+    ipam:
+      config: [{ subnet: 10.91.2.0/24 }]
+  oci:
+    ipam:
+      config: [{ subnet: 10.91.3.0/24 }]
+
+services:
+  ha:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    hostname: homeassistant
+    volumes:
+      - ./ha/configuration.yaml:/config/configuration.yaml:ro
+    networks:
+      oci:
+        interface_name: oci0
+        ipv4_address: 10.91.3.2
+        # Default route -> HA's network integration picks oci0 for zeroconf.
+        gw_priority: 1
+      wg:
+        interface_name: wg0
+        ipv4_address: 10.91.2.3
+
+  sniff-oci:
+    image: nicolaka/netshoot
+    network_mode: "service:ha"
+    command: sleep infinity
+
+  relay-oci:
+    build: ../..
+    image: mdns-tunnel:e2e
+    network_mode: "service:ha"
+    environment:
+      IFACE: oci0
+      CONNECT: "10.91.2.2:5354"
+      SERVICES: _hap._tcp.local
+      ADVERTISE_IP: "10.91.2.3"
+      LOG_LEVEL: debug
+    restart: unless-stopped
+
+  # Plays the OpenWrt router: avahi stands in for umdns, on lan0 only.
+  router:
+    build: lan-client
+    image: mdns-tunnel-e2e-client
+    hostname: router
+    environment:
+      AVAHI_INTERFACES: lan0
+    networks:
+      lan:
+        interface_name: lan0
+        ipv4_address: 10.91.1.2
+      wg:
+        interface_name: wg0
+        ipv4_address: 10.91.2.2
+
+  relay-lan:
+    image: mdns-tunnel:e2e
+    network_mode: "service:router"
+    environment:
+      IFACE: lan0
+      LISTEN: "10.91.2.2:5354"
+      SERVICES: _hap._tcp.local
+      LOG_LEVEL: debug
+    restart: unless-stopped
+
+  # Plays the iPhone.
+  lan-client:
+    build: lan-client
+    image: mdns-tunnel-e2e-client
+    hostname: lan-client
+    cap_add: [NET_ADMIN]
+    networks:
+      lan:
+        interface_name: lan0
+        ipv4_address: 10.91.1.10

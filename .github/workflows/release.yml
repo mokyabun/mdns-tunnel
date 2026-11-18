@@ -1,0 +1,102 @@
+# Drafts the GitHub release, fills it from the child workflows, then publishes it:
+# - release-binaries.yml: static binaries and OpenWrt packages, attached to the release
+# - release-docker.yml: the multi-arch image on GHCR
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions: {}
+
+jobs:
+  ci:
+    name: CI
+    uses: $/.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  version:
+    name: Check the tag against Cargo.toml
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the toolchain
+        run: rustup toolchain install
+
+      - name: Compare versions
+        run: |
+          version=$(cargo pkgid | sed 's/.*[#@]//')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+  draft:
+    name: Draft GitHub release
+    needs: [ci, version]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      # Notes come from the release PR body, or are generated when the tag was pushed outside a PR.
+      - name: Create draft release
+        run: |
+          notes=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].body // empty')
+          if [ -n "$notes" ]; then
+            notes_args=(--notes "$notes")
+          else
+            notes_args=(--generate-notes)
+          fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            notes_args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
+            --title "mdns-tunnel ${GITHUB_REF_NAME#v}" "${notes_args[@]}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+
+  binaries:
+    name: Release binaries
+    needs: draft
+    uses: $/.github/workflows/release-binaries.yml
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+  # Publishes only after every release asset has built.
+  docker:
+    name: Release image
+    needs: binaries
+    uses: $/.github/workflows/release-docker.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  publish:
+    name: Publish GitHub release
+    needs: [binaries, docker]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      # Immutable releases lock assets on publish, so this runs after every asset is attached.
+      - name: Publish release
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

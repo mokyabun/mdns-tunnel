@@ -1,0 +1,14 @@
+# Add next to the Home Assistant service on the OCI instance.
+services:
+  mdns-tunnel:
+    image: ghcr.io/mokyabun/mdns-tunnel:release # or a pinned vX.Y.Z
+    container_name: mdns-tunnel
+    # Shares HA's network namespace, so it sees HA's mDNS on HA's bridge interface.
+    network_mode: "service:homeassistant"
+    environment:
+      IFACE: eth0
+      CONNECT: "10.8.0.1:5354" # router WG IP
+      SERVICES: _hap._tcp.local
+      ADVERTISE_IP: "10.8.0.2" # OCI WG IP
+      # ADVERTISE_PORT: "21063" # only when the host port differs from HA's HomeKit port
+    restart: unless-stopped

@@ -1,0 +1,29 @@
+[package]
+name = "mdns-tunnel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.35"
+simple-dns = "0.13.1"
+socket2 = { version = "0.6.5", features = ["all"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.191"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Doc sections and #[must_use] on every function are noise for a binary crate.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
