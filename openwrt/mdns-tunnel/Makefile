@@ -5,6 +5,9 @@ PKG_NAME:=mdns-tunnel
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 
+PKG_LICENSE:=MIT
+PKG_LICENSE_FILES:=LICENSE
+
 # Prebuilt static musl binary from `docker build --target export --output dist .`;
 # CURDIR resolves a symlinked package directory to its path in the repository.
 MDNS_TUNNEL_BIN ?= $(CURDIR)/../../dist/mdns-tunnel
