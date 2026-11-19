@@ -7,6 +7,11 @@ use mdns_tunnel::config::Config;
 use mdns_tunnel::logger;
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("mdns-tunnel {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
     let config = match Config::from_env(|var| std::env::var(var).ok()) {
         Ok(config) => config,
         Err(err) => {
