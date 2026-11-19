@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mdns-tunnel
 # The release build passes PKG_VERSION from the git tag.
-PKG_VERSION:=0.1.0
+PKG_VERSION:=0.2.0
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=mokyabun <mokyabun@gmail.com>
