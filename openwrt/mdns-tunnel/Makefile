@@ -5,6 +5,7 @@ PKG_NAME:=mdns-tunnel
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 
+PKG_MAINTAINER:=mokyabun <mokyabun@gmail.com>
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 
@@ -17,12 +18,14 @@ include $(INCLUDE_DIR)/package.mk
 define Package/mdns-tunnel
   SECTION:=net
   CATEGORY:=Network
-  TITLE:=HomeKit mDNS relay over a TCP tunnel
+  TITLE:=mDNS relay over a TCP tunnel
+  URL:=https://github.com/mokyabun/mdns-tunnel
 endef
 
 define Package/mdns-tunnel/description
-  Relays HomeKit mDNS between the LAN and a remote Home Assistant
-  over a TCP connection inside WireGuard.
+  Relays mDNS packets of selected services between the LAN and
+  a remote host over a TCP connection inside WireGuard, so LAN
+  devices can discover services such as HomeKit Bridge.
 endef
 
 define Package/mdns-tunnel/conffiles
