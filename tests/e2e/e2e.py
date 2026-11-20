@@ -11,6 +11,7 @@ from pathlib import Path
 
 COMPOSE = ["docker", "compose", "-f", str(Path(__file__).with_name("compose.yml"))]
 ADVERTISE_IP = "10.91.2.3"
+LAN_ONLY_SERVICE = "_lan-only._tcp"
 CAPTURE_SECONDS = 10
 # A relay loop would multicast thousands of packets in one capture.
 LOOP_PACKETS = 100
@@ -87,21 +88,23 @@ def check_no_ipv6(host: str):
 def check_service_filter():
     capture = start_capture("sniff-oci", "oci0")
     time.sleep(2)
+    # HA browses every type its integrations know, _airplay._tcp among them, from the
+    # relay's own address -> only a type HA never asks for tells a leak apart.
     run_in(
         "lan-client",
         "sh",
         "-c",
-        'avahi-publish -s "Living Room" _airplay._tcp 7000 & sleep 3; avahi-browse -rt _hap._tcp; kill $!',
+        f'avahi-publish -s "Living Room" {LAN_ONLY_SERVICE} 7000 & sleep 3; avahi-browse -rt _hap._tcp; kill $!',
     )
     oci = packets(capture)
 
     # The _hap._tcp browse in the same window proves the capture works.
     if count(oci, "_hap._tcp") == 0:
         fail("no _hap._tcp query reached HA's network")
-    airplay = count(oci, "_airplay")
-    if airplay:
-        fail(f"{airplay} _airplay._tcp packets reached HA's network")
-    passed("_hap._tcp queries reach HA, _airplay._tcp stays on the LAN")
+    leaked = count(oci, LAN_ONLY_SERVICE)
+    if leaked:
+        fail(f"{leaked} {LAN_ONLY_SERVICE} packets reached HA's network")
+    passed(f"_hap._tcp queries reach HA, {LAN_ONLY_SERVICE} stays on the LAN")
 
 
 def check_no_relay_loop():
