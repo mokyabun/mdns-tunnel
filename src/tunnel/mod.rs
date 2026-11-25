@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use log::{info, warn};
 
-use frame::{Frame, HelloError, read_frame, read_hello, write_hello};
+use frame::{Frame, read_frame, read_hello, write_hello};
 pub use writer::TunnelWriter;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -142,13 +142,13 @@ impl Tunnel {
     }
 }
 
-fn connect(addr: SocketAddr, timeouts: Timeouts) -> Result<TcpStream, HelloError> {
+fn connect(addr: SocketAddr, timeouts: Timeouts) -> anyhow::Result<TcpStream> {
     let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
     handshake(&mut stream, timeouts)?;
     Ok(stream)
 }
 
-fn handshake(stream: &mut TcpStream, timeouts: Timeouts) -> Result<(), HelloError> {
+fn handshake(stream: &mut TcpStream, timeouts: Timeouts) -> anyhow::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(timeouts.idle))?;
     stream.set_write_timeout(Some(timeouts.idle))?;

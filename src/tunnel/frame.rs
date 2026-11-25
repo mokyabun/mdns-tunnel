@@ -1,8 +1,9 @@
 //! Tunnel wire format: a hello (`MAGIC`, `u16` version), then frames of a big-endian `u16`
 //! length followed by one mDNS packet. Length 0 is a keepalive.
 
-use std::fmt;
 use std::io::{self, Read, Write};
+
+use anyhow::bail;
 
 pub const MAGIC: [u8; 4] = *b"MDNT";
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -43,43 +44,15 @@ pub fn read_frame(input: &mut impl Read) -> io::Result<Frame> {
     Ok(Frame::Packet(packet))
 }
 
-#[derive(Debug)]
-pub enum HelloError {
-    Io(io::Error),
-    BadMagic([u8; 4]),
-    VersionMismatch { peer: u16 },
-}
-
-impl fmt::Display for HelloError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "{err}"),
-            Self::BadMagic(magic) => write!(f, "peer is not mdns-tunnel (magic {magic:02x?})"),
-            Self::VersionMismatch { peer } => write!(
-                f,
-                "peer speaks protocol version {peer}, this relay speaks {PROTOCOL_VERSION}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for HelloError {}
-
-impl From<io::Error> for HelloError {
-    fn from(err: io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
 pub fn write_hello(out: &mut impl Write) -> io::Result<()> {
     out.write_all(&[MAGIC.as_slice(), &PROTOCOL_VERSION.to_be_bytes()].concat())
 }
 
-pub fn read_hello(input: &mut impl Read) -> Result<(), HelloError> {
+pub fn read_hello(input: &mut impl Read) -> anyhow::Result<()> {
     let mut magic = [0; 4];
     input.read_exact(&mut magic)?;
     if magic != MAGIC {
-        return Err(HelloError::BadMagic(magic));
+        bail!("peer is not mdns-tunnel (magic {magic:02x?})");
     }
 
     let mut version = [0; 2];
@@ -87,7 +60,7 @@ pub fn read_hello(input: &mut impl Read) -> Result<(), HelloError> {
 
     let peer = u16::from_be_bytes(version);
     if peer != PROTOCOL_VERSION {
-        return Err(HelloError::VersionMismatch { peer });
+        bail!("peer speaks protocol version {peer}, this relay speaks {PROTOCOL_VERSION}");
     }
 
     Ok(())
@@ -155,7 +128,7 @@ mod tests {
     #[test]
     fn wrong_magic() {
         let err = read_hello(&mut Cursor::new(b"HTTP/1".to_vec())).unwrap_err();
-        assert!(matches!(err, HelloError::BadMagic(magic) if &magic == b"HTTP"));
+        assert!(err.to_string().contains("not mdns-tunnel"));
     }
 
     #[test]
@@ -163,9 +136,6 @@ mod tests {
         let mut hello = MAGIC.to_vec();
         hello.extend_from_slice(&(PROTOCOL_VERSION + 1).to_be_bytes());
         let err = read_hello(&mut Cursor::new(hello)).unwrap_err();
-        assert!(
-            matches!(err, HelloError::VersionMismatch { peer } if peer == PROTOCOL_VERSION + 1)
-        );
         assert!(
             err.to_string()
                 .contains(&(PROTOCOL_VERSION + 1).to_string())
