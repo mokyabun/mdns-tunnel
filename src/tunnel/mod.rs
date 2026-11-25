@@ -102,7 +102,7 @@ impl Tunnel {
         let peer = peer_name(&stream);
 
         let id = match stream.try_clone() {
-            Ok(write_half) => self.writer.attach(write_half),
+            Ok(write_half) => self.writer.replace_connection(write_half),
             Err(err) => {
                 warn!("tunnel to {peer} unusable: {err}");
                 return;
@@ -112,7 +112,7 @@ impl Tunnel {
 
         let err = self.read_until_error(&mut stream);
 
-        self.writer.detach(id);
+        self.writer.close_if_current(id);
         match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
                 info!("tunnel to {peer} down: no frame within the idle timeout");
