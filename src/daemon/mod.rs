@@ -3,13 +3,12 @@
 mod mdns_socket;
 
 use std::convert::Infallible;
-use std::fmt::Display;
-use std::io;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
+use anyhow::Context;
 use log::{debug, info, warn};
 
 use crate::config::{Config, Role};
@@ -23,9 +22,9 @@ const MAX_PACKET_SIZE: usize = 9000;
 type SharedRelay = Arc<Mutex<Relay>>;
 
 /// Runs the relay; returns only when the mDNS socket fails.
-pub fn run(config: Config) -> io::Result<Infallible> {
-    let socket =
-        MdnsSocket::open(&config.iface).context(format!("mDNS socket on {}", config.iface))?;
+pub fn run(config: Config) -> anyhow::Result<Infallible> {
+    let socket = MdnsSocket::open(&config.iface)
+        .with_context(|| format!("mDNS socket on {}", config.iface))?;
     let socket = Arc::new(socket);
     let relay = Arc::new(Mutex::new(Relay::new(config.services, config.advertise)));
 
@@ -36,10 +35,11 @@ pub fn run(config: Config) -> io::Result<Infallible> {
     forward_local_packets(&socket, &relay, &writer)
 }
 
-fn start_tunnel(tunnel: Tunnel, role: Role) -> io::Result<()> {
+fn start_tunnel(tunnel: Tunnel, role: Role) -> anyhow::Result<()> {
     match role {
         Role::Listen(addr) => {
-            let listener = TcpListener::bind(addr).context(format!("tunnel listen on {addr}"))?;
+            let listener =
+                TcpListener::bind(addr).with_context(|| format!("tunnel listen on {addr}"))?;
             info!("listening for the tunnel on {addr}");
             thread::spawn(move || tunnel.listen(&listener));
         }
@@ -76,7 +76,7 @@ fn forward_local_packets(
     socket: &MdnsSocket,
     relay: &SharedRelay,
     writer: &TunnelWriter,
-) -> io::Result<Infallible> {
+) -> anyhow::Result<Infallible> {
     let mut buf = [0; MAX_PACKET_SIZE];
 
     loop {
@@ -90,16 +90,5 @@ fn forward_local_packets(
         if let Ok(bytes) = relayed {
             writer.send(bytes);
         }
-    }
-}
-
-/// Prefixes an I/O error with what was being done, keeping its kind.
-trait Context<T> {
-    fn context(self, what: impl Display) -> io::Result<T>;
-}
-
-impl<T> Context<T> for io::Result<T> {
-    fn context(self, what: impl Display) -> io::Result<T> {
-        self.map_err(|err| io::Error::new(err.kind(), format!("{what}: {err}")))
     }
 }

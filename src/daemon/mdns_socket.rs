@@ -3,9 +3,8 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 
+use anyhow::Context;
 use socket2::{Domain, InterfaceIndexOrAddress, Protocol, Socket, Type};
-
-use super::Context;
 
 const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MDNS_PORT: u16 = 5353;
@@ -17,8 +16,8 @@ pub struct MdnsSocket {
 }
 
 impl MdnsSocket {
-    pub fn open(iface: &str) -> io::Result<Self> {
-        let index = interface_index(iface).context(format!("interface {iface}"))?;
+    pub fn open(iface: &str) -> anyhow::Result<Self> {
+        let index = interface_index(iface).with_context(|| format!("interface {iface}"))?;
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         share_port_on_interface(&socket, iface)?;
@@ -44,7 +43,7 @@ impl MdnsSocket {
 }
 
 /// Shares port 5353 with other responders and receives only what arrives on `iface`.
-fn share_port_on_interface(socket: &Socket, iface: &str) -> io::Result<()> {
+fn share_port_on_interface(socket: &Socket, iface: &str) -> anyhow::Result<()> {
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
 
@@ -53,10 +52,11 @@ fn share_port_on_interface(socket: &Socket, iface: &str) -> io::Result<()> {
         .context("SO_BINDTODEVICE")?;
 
     // Otherwise the socket also receives groups joined by other sockets on other interfaces.
-    socket.set_multicast_all_v4(false)
+    socket.set_multicast_all_v4(false)?;
+    Ok(())
 }
 
-fn join_mdns_group(socket: &Socket, index: u32) -> io::Result<()> {
+fn join_mdns_group(socket: &Socket, index: u32) -> anyhow::Result<()> {
     socket
         .join_multicast_v4_n(&MDNS_GROUP, &InterfaceIndexOrAddress::Index(index))
         .context("join 224.0.0.251")?;
@@ -64,7 +64,8 @@ fn join_mdns_group(socket: &Socket, index: u32) -> io::Result<()> {
 
     socket.set_multicast_ttl_v4(255)?;
     // On so that HA, in the same network namespace as the OCI relay, hears relayed queries.
-    socket.set_multicast_loop_v4(true)
+    socket.set_multicast_loop_v4(true)?;
+    Ok(())
 }
 
 fn interface_index(iface: &str) -> io::Result<u32> {

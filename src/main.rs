@@ -1,5 +1,4 @@
 use std::convert::Infallible;
-use std::io;
 use std::process::ExitCode;
 
 use log::error;
@@ -22,21 +21,18 @@ fn main() -> ExitCode {
     logger::init(config.log_level);
 
     let Err(err) = run(config);
-    error!("{err}");
+    error!("{err:#}");
 
     // Exiting lets procd or Docker restart the relay.
     ExitCode::FAILURE
 }
 
 #[cfg(target_os = "linux")]
-fn run(config: Config) -> io::Result<Infallible> {
+fn run(config: Config) -> anyhow::Result<Infallible> {
     mdns_tunnel::daemon::run(config)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run(_: Config) -> io::Result<Infallible> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the mDNS socket requires Linux",
-    ))
+fn run(_: Config) -> anyhow::Result<Infallible> {
+    anyhow::bail!("the mDNS socket requires Linux")
 }
