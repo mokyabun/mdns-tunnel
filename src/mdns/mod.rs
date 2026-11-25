@@ -58,17 +58,20 @@ impl Relay {
     pub fn local_to_tunnel(&mut self, bytes: &[u8], now: Instant) -> Result<Vec<u8>, DropReason> {
         self.names.expire(now);
 
-        let result = self.process_local(bytes, now);
-        log_drop("local", bytes.len(), result)
+        self.process_local(bytes, now).inspect_err(|reason| {
+            debug!("dropped local packet of {} bytes: {reason}", bytes.len());
+        })
     }
 
     /// Returns the bytes to multicast for a packet received from the tunnel: the packet itself.
     pub fn tunnel_to_local(&mut self, bytes: Vec<u8>, now: Instant) -> Result<Vec<u8>, DropReason> {
         self.names.expire(now);
 
-        let len = bytes.len();
-        let result = self.process_tunnel(bytes, now);
-        log_drop("tunnel", len, result)
+        self.process_tunnel(&bytes, now)
+            .inspect_err(|reason| {
+                debug!("dropped tunnel packet of {} bytes: {reason}", bytes.len());
+            })
+            .map(|()| bytes)
     }
 
     /// Call after multicasting `bytes` -> their loopback copy counts as an echo.
@@ -92,25 +95,12 @@ impl Relay {
             .map_err(|_| DropReason::Malformed)
     }
 
-    fn process_tunnel(&mut self, bytes: Vec<u8>, now: Instant) -> Result<Vec<u8>, DropReason> {
-        let packet = Packet::parse(&bytes).map_err(|_| DropReason::Malformed)?;
+    fn process_tunnel(&mut self, bytes: &[u8], now: Instant) -> Result<(), DropReason> {
+        let packet = Packet::parse(bytes).map_err(|_| DropReason::Malformed)?;
         self.names.learn(&packet, now);
 
-        Ok(bytes)
+        Ok(())
     }
-}
-
-/// Passes `result` through, logging why the packet from `source` was dropped.
-fn log_drop(
-    source: &str,
-    len: usize,
-    result: Result<Vec<u8>, DropReason>,
-) -> Result<Vec<u8>, DropReason> {
-    if let Err(reason) = &result {
-        debug!("dropped {source} packet of {len} bytes: {reason}");
-    }
-
-    result
 }
 
 #[cfg(test)]
