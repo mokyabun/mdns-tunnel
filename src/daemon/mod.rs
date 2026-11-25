@@ -4,7 +4,8 @@ mod mdns_socket;
 
 use std::convert::Infallible;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
 
@@ -19,20 +20,26 @@ use mdns_socket::MdnsSocket;
 /// mDNS packets are at most 9000 bytes (RFC 6762 section 17).
 const MAX_PACKET_SIZE: usize = 9000;
 
-type SharedRelay = Arc<Mutex<Relay>>;
+/// A packet waiting for the event thread, tagged with where it came from.
+enum Event {
+    Local(Vec<u8>),
+    Tunnel(Vec<u8>),
+}
 
-/// Runs the relay; returns only when the mDNS socket fails.
+/// Runs the relay; returns only when the mDNS socket or the event thread fails.
 pub fn run(config: Config) -> anyhow::Result<Infallible> {
     let socket = MdnsSocket::open(&config.iface)
         .with_context(|| format!("mDNS socket on {}", config.iface))?;
     let socket = Arc::new(socket);
-    let relay = Arc::new(Mutex::new(Relay::new(config.services, config.advertise)));
+    let (events, received) = mpsc::channel();
 
-    let tunnel = Tunnel::new(multicast_from_tunnel(&relay, &socket), Timeouts::DEFAULT);
-    let writer = tunnel.writer();
+    let tunnel = Tunnel::new(tunnel_events(events.clone()), Timeouts::DEFAULT);
+    let relay = Relay::new(config.services, config.advertise);
+    let (multicast_socket, writer) = (Arc::clone(&socket), tunnel.writer());
+    thread::spawn(move || relay_events(relay, &multicast_socket, &writer, received));
     start_tunnel(tunnel, config.role)?;
 
-    forward_local_packets(&socket, &relay, &writer)
+    receive_local_packets(&socket, &events)
 }
 
 fn start_tunnel(tunnel: Tunnel, role: Role) -> anyhow::Result<()> {
@@ -52,30 +59,47 @@ fn start_tunnel(tunnel: Tunnel, role: Role) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn multicast_from_tunnel(relay: &SharedRelay, socket: &Arc<MdnsSocket>) -> OnPacket {
-    let (relay, socket) = (Arc::clone(relay), Arc::clone(socket));
-
+fn tunnel_events(events: Sender<Event>) -> OnPacket {
+    // A dead event thread also fails the receive loop, which ends the process.
     Arc::new(move |packet| {
-        // Holding the lock across the send makes the receive thread wait until the echo of this
-        // packet is recorded.
-        let mut relay = relay.lock().expect("relay lock");
-        let now = Instant::now();
-
-        let Some(bytes) = relay.from_tunnel(&packet, now) else {
-            return;
-        };
-
-        match socket.send_multicast(&bytes) {
-            Ok(()) => relay.sent_local(&bytes, now),
-            Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
-        }
+        let _ = events.send(Event::Tunnel(packet));
     })
 }
 
-fn forward_local_packets(
+/// Handles every packet in arrival order. A multicast packet is recorded before the next event
+/// is taken, and its echo can only arrive after the send -> the echo is always recognized.
+fn relay_events(
+    mut relay: Relay,
     socket: &MdnsSocket,
-    relay: &SharedRelay,
     writer: &TunnelWriter,
+    events: Receiver<Event>,
+) {
+    for event in events {
+        let now = Instant::now();
+
+        match event {
+            Event::Local(packet) => {
+                if let Ok(bytes) = relay.from_local(&packet, now) {
+                    writer.send(bytes);
+                }
+            }
+            Event::Tunnel(packet) => {
+                let Some(bytes) = relay.from_tunnel(&packet, now) else {
+                    continue;
+                };
+
+                match socket.send_multicast(&bytes) {
+                    Ok(()) => relay.sent_local(&bytes, now),
+                    Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
+                }
+            }
+        }
+    }
+}
+
+fn receive_local_packets(
+    socket: &MdnsSocket,
+    events: &Sender<Event>,
 ) -> anyhow::Result<Infallible> {
     let mut buf = [0; MAX_PACKET_SIZE];
 
@@ -83,12 +107,8 @@ fn forward_local_packets(
         let (len, from) = socket.recv(&mut buf).context("mDNS receive")?;
         debug!("local packet of {len} bytes from {from}");
 
-        let relayed = relay
-            .lock()
-            .expect("relay lock")
-            .from_local(&buf[..len], Instant::now());
-        if let Ok(bytes) = relayed {
-            writer.send(bytes);
-        }
+        events
+            .send(Event::Local(buf[..len].to_vec()))
+            .context("the event thread has stopped")?;
     }
 }

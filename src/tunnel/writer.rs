@@ -5,7 +5,7 @@ use log::{debug, warn};
 
 use super::frame::{Frame, write_frame};
 
-/// The write half of the current tunnel connection, shared with the mDNS thread.
+/// The write half of the current tunnel connection, shared with the daemon's event thread.
 #[derive(Debug, Clone, Default)]
 pub struct TunnelWriter {
     state: Arc<Mutex<State>>,
