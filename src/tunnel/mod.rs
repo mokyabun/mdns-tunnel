@@ -110,7 +110,7 @@ impl Tunnel {
         };
         info!("tunnel up with {peer}");
 
-        let err = self.read_frames(&mut stream);
+        let err = self.read_until_error(&mut stream);
 
         self.writer.detach(id);
         match err.kind() {
@@ -121,7 +121,7 @@ impl Tunnel {
         }
     }
 
-    fn read_frames(&self, stream: &mut TcpStream) -> io::Error {
+    fn read_until_error(&self, stream: &mut TcpStream) -> io::Error {
         loop {
             match read_frame(stream) {
                 Ok(Frame::Keepalive) => {}
