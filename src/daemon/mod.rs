@@ -79,17 +79,17 @@ fn relay_events(
 
         match event {
             Event::Local(packet) => {
-                if let Ok(bytes) = relay.from_local(&packet, now) {
+                if let Ok(bytes) = relay.local_to_tunnel(&packet, now) {
                     writer.send(bytes);
                 }
             }
             Event::Tunnel(packet) => {
-                let Some(bytes) = relay.from_tunnel(&packet, now) else {
+                let Ok(bytes) = relay.tunnel_to_local(packet, now) else {
                     continue;
                 };
 
                 match socket.send_multicast(&bytes) {
-                    Ok(()) => relay.sent_local(&bytes, now),
+                    Ok(()) => relay.record_multicast(&bytes, now),
                     Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
                 }
             }

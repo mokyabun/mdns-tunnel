@@ -146,8 +146,8 @@ fn rewrite_puts_advertise_ip_in_ha_response() {
 fn ha_response_crosses_to_lan_rewritten() {
     let now = Instant::now();
     let (mut lan, mut ha) = (openwrt(), oci());
-    let framed = ha.from_local(&fixture("ha-response"), now).unwrap();
-    let multicast = lan.from_tunnel(&framed, now).unwrap();
+    let framed = ha.local_to_tunnel(&fixture("ha-response"), now).unwrap();
+    let multicast = lan.tunnel_to_local(framed, now).unwrap();
     assert_eq!(
         a_addresses(&Packet::parse(&multicast).unwrap()),
         [ADVERTISE_IP]
@@ -160,13 +160,13 @@ fn lan_relays_host_query_after_learning_from_tunnel() {
     let (mut lan, mut ha) = (openwrt(), oci());
     let host_query = fixture("avahi-host-query");
     assert_eq!(
-        lan.from_local(&host_query, now),
+        lan.local_to_tunnel(&host_query, now),
         Err(DropReason::NothingRelevant)
     );
-    let framed = ha.from_local(&fixture("ha-response"), now).unwrap();
-    let multicast = lan.from_tunnel(&framed, now).unwrap();
-    lan.sent_local(&multicast, now);
+    let framed = ha.local_to_tunnel(&fixture("ha-response"), now).unwrap();
+    let multicast = lan.tunnel_to_local(framed, now).unwrap();
+    lan.record_multicast(&multicast, now);
 
-    assert!(lan.from_local(&host_query, now).is_ok());
-    assert_eq!(lan.from_local(&multicast, now), Err(DropReason::Echo));
+    assert!(lan.local_to_tunnel(&host_query, now).is_ok());
+    assert_eq!(lan.local_to_tunnel(&multicast, now), Err(DropReason::Echo));
 }
