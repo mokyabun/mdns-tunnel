@@ -5,7 +5,7 @@ mod mdns_socket;
 use std::convert::Infallible;
 use std::net::TcpListener;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Instant;
 
@@ -20,6 +20,10 @@ use mdns_socket::MdnsSocket;
 /// mDNS packets are at most 9000 bytes (RFC 6762 section 17).
 const MAX_PACKET_SIZE: usize = 9000;
 
+/// Bounded so a stalled tunnel write blocks the receive loop and the kernel drops packets,
+/// instead of queueing stale ones without limit.
+const EVENT_QUEUE: usize = 64;
+
 /// A packet waiting for the event thread, tagged with where it came from.
 enum Event {
     Local(Vec<u8>),
@@ -31,7 +35,7 @@ pub fn run(config: Config) -> anyhow::Result<Infallible> {
     let socket = MdnsSocket::open(&config.iface)
         .with_context(|| format!("mDNS socket on {}", config.iface))?;
     let socket = Arc::new(socket);
-    let (events, received) = mpsc::channel();
+    let (events, received) = mpsc::sync_channel(EVENT_QUEUE);
 
     let tunnel = Tunnel::new(tunnel_events(events.clone()), Timeouts::DEFAULT);
     let relay = Relay::new(config.services, config.advertise);
@@ -59,7 +63,7 @@ fn start_tunnel(tunnel: Tunnel, role: Role) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn tunnel_events(events: Sender<Event>) -> OnPacket {
+fn tunnel_events(events: SyncSender<Event>) -> OnPacket {
     // A dead event thread also fails the receive loop, which ends the process.
     Arc::new(move |packet| {
         let _ = events.send(Event::Tunnel(packet));
@@ -83,23 +87,25 @@ fn relay_events(
                     writer.send(bytes);
                 }
             }
-            Event::Tunnel(packet) => {
-                let Ok(bytes) = relay.tunnel_to_local(packet, now) else {
-                    continue;
-                };
-
-                match socket.send_multicast(&bytes) {
-                    Ok(()) => relay.record_multicast(&bytes, now),
-                    Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
-                }
-            }
+            Event::Tunnel(packet) => multicast_tunnel_packet(&mut relay, socket, packet, now),
         }
+    }
+}
+
+fn multicast_tunnel_packet(relay: &mut Relay, socket: &MdnsSocket, packet: Vec<u8>, now: Instant) {
+    let Ok(bytes) = relay.tunnel_to_local(packet, now) else {
+        return;
+    };
+
+    match socket.send_multicast(&bytes) {
+        Ok(()) => relay.record_multicast(&bytes, now),
+        Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
     }
 }
 
 fn receive_local_packets(
     socket: &MdnsSocket,
-    events: &Sender<Event>,
+    events: &SyncSender<Event>,
 ) -> anyhow::Result<Infallible> {
     let mut buf = [0; MAX_PACKET_SIZE];
 
