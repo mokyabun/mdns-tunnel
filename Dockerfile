@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Cross-compile on the build host instead of emulating each target with QEMU.
-FROM --platform=$BUILDPLATFORM rust:1.99.1-alpine AS build
+FROM --platform=$BUILDPLATFORM rust:1.100.0-alpine AS build
 ARG TARGETARCH
 WORKDIR /src
 COPY rust-toolchain.toml ./
