@@ -78,6 +78,6 @@ jobs:
     steps:
       # Keeps platform images that a tagged multi-arch index still references.
       - name: Delete untagged images
-        uses: dataaxiom/ghcr-cleanup-action@v1.2.2
+        uses: dataaxiom/ghcr-cleanup-action@v1.3.0
         with:
           delete-untagged: true
