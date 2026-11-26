@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths-ignore: ["**/*.md"]
   # Pushes to main warm the caches that pull requests restore.
   push:
