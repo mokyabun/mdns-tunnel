@@ -1,7 +1,7 @@
-use std::fmt;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use anyhow::{anyhow, bail};
 use log::LevelFilter;
 
 use crate::mdns::Advertise;
@@ -21,32 +21,9 @@ pub struct Config {
     pub log_level: LevelFilter,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct ConfigError {
-    pub var: &'static str,
-    pub reason: String,
-}
-
-impl ConfigError {
-    fn new(var: &'static str, reason: impl Into<String>) -> Self {
-        Self {
-            var,
-            reason: reason.into(),
-        }
-    }
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.var, self.reason)
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
 impl Config {
     /// Tests pass their own `lookup` instead of touching the process environment.
-    pub fn from_env(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+    pub fn from_env(lookup: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
         let env = Env(lookup);
 
         Ok(Self {
@@ -73,12 +50,11 @@ impl<F: Fn(&str) -> Option<String>> Env<F> {
         (self.0)(var).filter(|value| !value.is_empty())
     }
 
-    fn required(&self, var: &'static str) -> Result<String, ConfigError> {
-        self.get(var)
-            .ok_or_else(|| ConfigError::new(var, "not set"))
+    fn required(&self, var: &str) -> anyhow::Result<String> {
+        self.get(var).ok_or_else(|| anyhow!("{var}: not set"))
     }
 
-    fn parsed<T: FromStr>(&self, var: &'static str) -> Result<Option<T>, ConfigError> {
+    fn parsed<T: FromStr>(&self, var: &str) -> anyhow::Result<Option<T>> {
         let Some(value) = self.get(var) else {
             return Ok(None);
         };
@@ -86,24 +62,21 @@ impl<F: Fn(&str) -> Option<String>> Env<F> {
         value
             .parse()
             .map(Some)
-            .map_err(|_| ConfigError::new(var, format!("invalid value {value:?}")))
+            .map_err(|_| anyhow!("{var}: invalid value {value:?}"))
     }
 }
 
-fn role(listen: Option<SocketAddr>, connect: Option<SocketAddr>) -> Result<Role, ConfigError> {
+fn role(listen: Option<SocketAddr>, connect: Option<SocketAddr>) -> anyhow::Result<Role> {
     match (listen, connect) {
         (Some(addr), None) => Ok(Role::Listen(addr)),
         (None, Some(addr)) => Ok(Role::Connect(addr)),
-        (Some(_), Some(_)) => Err(ConfigError::new(
-            "LISTEN",
-            "set only one of LISTEN and CONNECT",
-        )),
-        (None, None) => Err(ConfigError::new("LISTEN", "set LISTEN or CONNECT")),
+        (Some(_), Some(_)) => bail!("LISTEN: set only one of LISTEN and CONNECT"),
+        (None, None) => bail!("LISTEN: set LISTEN or CONNECT"),
     }
 }
 
 /// Comma-separated, normalized like learned names: lowercase without a trailing dot.
-fn services(value: &str) -> Result<Vec<String>, ConfigError> {
+fn services(value: &str) -> anyhow::Result<Vec<String>> {
     let services: Vec<String> = value
         .split(',')
         .map(|service| service.trim().trim_end_matches('.').to_ascii_lowercase())
@@ -111,22 +84,19 @@ fn services(value: &str) -> Result<Vec<String>, ConfigError> {
         .collect();
 
     if services.is_empty() {
-        return Err(ConfigError::new("SERVICES", "no service names"));
+        bail!("SERVICES: no service names");
     }
 
     Ok(services)
 }
 
-fn log_level(value: &str) -> Result<LevelFilter, ConfigError> {
+fn log_level(value: &str) -> anyhow::Result<LevelFilter> {
     match value {
         "error" => Ok(LevelFilter::Error),
         "warn" => Ok(LevelFilter::Warn),
         "info" => Ok(LevelFilter::Info),
         "debug" => Ok(LevelFilter::Debug),
-        _ => Err(ConfigError::new(
-            "LOG_LEVEL",
-            format!("unknown level {value:?}, expected error, warn, info or debug"),
-        )),
+        _ => bail!("LOG_LEVEL: unknown level {value:?}, expected error, warn, info or debug"),
     }
 }
 
@@ -142,18 +112,20 @@ mod tests {
         ("SERVICES", "_hap._tcp.local"),
     ];
 
-    fn from_vars(vars: &[(&str, &str)]) -> Result<Config, ConfigError> {
+    fn from_vars(vars: &[(&str, &str)]) -> anyhow::Result<Config> {
         let vars: HashMap<&str, &str> = vars.iter().copied().collect();
         Config::from_env(|var| vars.get(var).map(ToString::to_string))
     }
 
     /// The OpenWrt configuration with some variables replaced; an empty value unsets one.
-    fn openwrt_with(overrides: &[(&str, &str)]) -> Result<Config, ConfigError> {
+    fn openwrt_with(overrides: &[(&str, &str)]) -> anyhow::Result<Config> {
         from_vars(&[OPENWRT, overrides].concat())
     }
 
-    fn rejected_var(overrides: &[(&str, &str)]) -> &'static str {
-        openwrt_with(overrides).unwrap_err().var
+    /// The variable an error names: messages read `VAR: reason`.
+    fn rejected_var(overrides: &[(&str, &str)]) -> String {
+        let message = openwrt_with(overrides).unwrap_err().to_string();
+        message.split(':').next().unwrap().to_owned()
     }
 
     #[test]

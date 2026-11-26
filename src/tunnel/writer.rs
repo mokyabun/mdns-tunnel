@@ -5,7 +5,7 @@ use log::{debug, warn};
 
 use super::frame::{Frame, write_frame};
 
-/// The write half of the current tunnel connection, shared with the mDNS thread.
+/// The write half of the current tunnel connection, shared with the daemon's event thread.
 #[derive(Debug, Clone, Default)]
 pub struct TunnelWriter {
     state: Arc<Mutex<State>>,
@@ -17,9 +17,13 @@ struct State {
     current: Option<Connection>,
 }
 
+/// Tells a connection apart from the one that replaced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ConnectionId(u64);
+
 #[derive(Debug)]
 struct Connection {
-    id: u64,
+    id: ConnectionId,
     stream: TcpStream,
 }
 
@@ -35,9 +39,9 @@ impl TunnelWriter {
     }
 
     /// Makes `stream` the current connection, closing the one it replaces.
-    pub(super) fn attach(&self, stream: TcpStream) -> u64 {
+    pub(super) fn replace_connection(&self, stream: TcpStream) -> ConnectionId {
         let mut state = self.lock();
-        let id = state.next_id;
+        let id = ConnectionId(state.next_id);
         state.next_id += 1;
 
         if let Some(replaced) = state.current.replace(Connection { id, stream }) {
@@ -47,8 +51,9 @@ impl TunnelWriter {
         id
     }
 
-    /// Closes connection `id` unless a newer connection has already replaced it.
-    pub(super) fn detach(&self, id: u64) {
+    /// Closes connection `id` unless a newer connection has already replaced it, so a reader
+    /// that ends late cannot close its replacement.
+    pub(super) fn close_if_current(&self, id: ConnectionId) {
         let mut state = self.lock();
         if state
             .current

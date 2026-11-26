@@ -55,15 +55,28 @@ impl Relay {
     }
 
     /// Turns a packet received on the mDNS socket into the bytes to send through the tunnel.
-    pub fn from_local(&mut self, bytes: &[u8], now: Instant) -> Result<Vec<u8>, DropReason> {
+    pub fn local_to_tunnel(&mut self, bytes: &[u8], now: Instant) -> Result<Vec<u8>, DropReason> {
         self.names.expire(now);
 
-        let result = self.process_local(bytes, now);
-        if let Err(reason) = result {
+        self.process_local(bytes, now).inspect_err(|reason| {
             debug!("dropped local packet of {} bytes: {reason}", bytes.len());
-        }
+        })
+    }
 
-        result
+    /// Returns the bytes to multicast for a packet received from the tunnel: the packet itself.
+    pub fn tunnel_to_local(&mut self, bytes: Vec<u8>, now: Instant) -> Result<Vec<u8>, DropReason> {
+        self.names.expire(now);
+
+        self.process_tunnel(&bytes, now)
+            .inspect_err(|reason| {
+                debug!("dropped tunnel packet of {} bytes: {reason}", bytes.len());
+            })
+            .map(|()| bytes)
+    }
+
+    /// Call after multicasting `bytes` -> their loopback copy counts as an echo.
+    pub fn record_multicast(&mut self, bytes: &[u8], now: Instant) {
+        self.loop_guard.record(bytes, now);
     }
 
     fn process_local(&mut self, bytes: &[u8], now: Instant) -> Result<Vec<u8>, DropReason> {
@@ -82,26 +95,11 @@ impl Relay {
             .map_err(|_| DropReason::Malformed)
     }
 
-    /// Returns the bytes to multicast for a packet received from the tunnel.
-    pub fn from_tunnel(&mut self, bytes: &[u8], now: Instant) -> Option<Vec<u8>> {
-        self.names.expire(now);
-
-        let Ok(packet) = Packet::parse(bytes) else {
-            debug!(
-                "dropped tunnel packet of {} bytes: {}",
-                bytes.len(),
-                DropReason::Malformed
-            );
-            return None;
-        };
-
+    fn process_tunnel(&mut self, bytes: &[u8], now: Instant) -> Result<(), DropReason> {
+        let packet = Packet::parse(bytes).map_err(|_| DropReason::Malformed)?;
         self.names.learn(&packet, now);
-        Some(bytes.to_vec())
-    }
 
-    /// Call after multicasting `bytes` -> their loopback copy counts as an echo.
-    pub fn sent_local(&mut self, bytes: &[u8], now: Instant) {
-        self.loop_guard.record(bytes, now);
+        Ok(())
     }
 }
 
@@ -131,9 +129,9 @@ mod tests {
 
     /// Carries a local packet from one relay to the other, returning what the receiver multicasts.
     fn cross(from: &mut Relay, to: &mut Relay, bytes: &[u8], now: Instant) -> Vec<u8> {
-        let framed = from.from_local(bytes, now).unwrap();
-        let multicast = to.from_tunnel(&framed, now).unwrap();
-        to.sent_local(&multicast, now);
+        let framed = from.local_to_tunnel(bytes, now).unwrap();
+        let multicast = to.tunnel_to_local(framed, now).unwrap();
+        to.record_multicast(&multicast, now);
         multicast
     }
 
@@ -165,12 +163,12 @@ mod tests {
         let now = Instant::now();
         let (mut lan, mut ha) = (openwrt(), oci());
         assert_eq!(
-            lan.from_local(&host_query(), now),
+            lan.local_to_tunnel(&host_query(), now),
             Err(DropReason::NothingRelevant)
         );
 
         cross(&mut ha, &mut lan, &ha_response(), now);
-        assert!(lan.from_local(&host_query(), now).is_ok());
+        assert!(lan.local_to_tunnel(&host_query(), now).is_ok());
     }
 
     #[test]
@@ -178,7 +176,7 @@ mod tests {
         let now = Instant::now();
         let (mut lan, mut ha) = (openwrt(), oci());
         let multicast = cross(&mut ha, &mut lan, &ha_response(), now);
-        assert_eq!(lan.from_local(&multicast, now), Err(DropReason::Echo));
+        assert_eq!(lan.local_to_tunnel(&multicast, now), Err(DropReason::Echo));
     }
 
     #[test]
@@ -186,10 +184,16 @@ mod tests {
         let now = Instant::now();
         let mut lan = openwrt();
         assert_eq!(
-            lan.from_local(&airplay_query(), now),
+            lan.local_to_tunnel(&airplay_query(), now),
             Err(DropReason::NothingRelevant)
         );
-        assert_eq!(lan.from_local(&[1, 2, 3], now), Err(DropReason::Malformed));
-        assert_eq!(lan.from_tunnel(&[1, 2, 3], now), None);
+        assert_eq!(
+            lan.local_to_tunnel(&[1, 2, 3], now),
+            Err(DropReason::Malformed)
+        );
+        assert_eq!(
+            lan.tunnel_to_local(vec![1, 2, 3], now),
+            Err(DropReason::Malformed)
+        );
     }
 }

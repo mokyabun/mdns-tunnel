@@ -3,13 +3,13 @@
 mod mdns_socket;
 
 use std::convert::Infallible;
-use std::fmt::Display;
-use std::io;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Instant;
 
+use anyhow::Context;
 use log::{debug, info, warn};
 
 use crate::config::{Config, Role};
@@ -20,26 +20,37 @@ use mdns_socket::MdnsSocket;
 /// mDNS packets are at most 9000 bytes (RFC 6762 section 17).
 const MAX_PACKET_SIZE: usize = 9000;
 
-type SharedRelay = Arc<Mutex<Relay>>;
+/// Bounded so a stalled tunnel write blocks the receive loop and the kernel drops packets,
+/// instead of queueing stale ones without limit.
+const EVENT_QUEUE: usize = 64;
 
-/// Runs the relay; returns only when the mDNS socket fails.
-pub fn run(config: Config) -> io::Result<Infallible> {
-    let socket =
-        MdnsSocket::open(&config.iface).context(format!("mDNS socket on {}", config.iface))?;
-    let socket = Arc::new(socket);
-    let relay = Arc::new(Mutex::new(Relay::new(config.services, config.advertise)));
-
-    let tunnel = Tunnel::new(multicast_from_tunnel(&relay, &socket), Timeouts::DEFAULT);
-    let writer = tunnel.writer();
-    start_tunnel(tunnel, config.role)?;
-
-    forward_local_packets(&socket, &relay, &writer)
+/// A packet waiting for the event thread, tagged with where it came from.
+enum Event {
+    Local(Vec<u8>),
+    Tunnel(Vec<u8>),
 }
 
-fn start_tunnel(tunnel: Tunnel, role: Role) -> io::Result<()> {
+/// Runs the relay; returns only when the mDNS socket or the event thread fails.
+pub fn run(config: Config) -> anyhow::Result<Infallible> {
+    let socket = MdnsSocket::open(&config.iface)
+        .with_context(|| format!("mDNS socket on {}", config.iface))?;
+    let socket = Arc::new(socket);
+    let (events, received) = mpsc::sync_channel(EVENT_QUEUE);
+
+    let tunnel = Tunnel::new(tunnel_events(events.clone()), Timeouts::DEFAULT);
+    let relay = Relay::new(config.services, config.advertise);
+    let (multicast_socket, writer) = (Arc::clone(&socket), tunnel.writer());
+    thread::spawn(move || relay_events(relay, &multicast_socket, &writer, received));
+    start_tunnel(tunnel, config.role)?;
+
+    receive_local_packets(&socket, &events)
+}
+
+fn start_tunnel(tunnel: Tunnel, role: Role) -> anyhow::Result<()> {
     match role {
         Role::Listen(addr) => {
-            let listener = TcpListener::bind(addr).context(format!("tunnel listen on {addr}"))?;
+            let listener =
+                TcpListener::bind(addr).with_context(|| format!("tunnel listen on {addr}"))?;
             info!("listening for the tunnel on {addr}");
             thread::spawn(move || tunnel.listen(&listener));
         }
@@ -52,54 +63,58 @@ fn start_tunnel(tunnel: Tunnel, role: Role) -> io::Result<()> {
     Ok(())
 }
 
-fn multicast_from_tunnel(relay: &SharedRelay, socket: &Arc<MdnsSocket>) -> OnPacket {
-    let (relay, socket) = (Arc::clone(relay), Arc::clone(socket));
-
+fn tunnel_events(events: SyncSender<Event>) -> OnPacket {
+    // A dead event thread also fails the receive loop, which ends the process.
     Arc::new(move |packet| {
-        // Holding the lock across the send makes the receive thread wait until the echo of this
-        // packet is recorded.
-        let mut relay = relay.lock().expect("relay lock");
-        let now = Instant::now();
-
-        let Some(bytes) = relay.from_tunnel(&packet, now) else {
-            return;
-        };
-
-        match socket.send_multicast(&bytes) {
-            Ok(()) => relay.sent_local(&bytes, now),
-            Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
-        }
+        let _ = events.send(Event::Tunnel(packet));
     })
 }
 
-fn forward_local_packets(
+/// Handles every packet in arrival order. A multicast packet is recorded before the next event
+/// is taken, and its echo can only arrive after the send -> the echo is always recognized.
+fn relay_events(
+    mut relay: Relay,
     socket: &MdnsSocket,
-    relay: &SharedRelay,
     writer: &TunnelWriter,
-) -> io::Result<Infallible> {
+    events: Receiver<Event>,
+) {
+    for event in events {
+        let now = Instant::now();
+
+        match event {
+            Event::Local(packet) => {
+                if let Ok(bytes) = relay.local_to_tunnel(&packet, now) {
+                    writer.send(bytes);
+                }
+            }
+            Event::Tunnel(packet) => multicast_tunnel_packet(&mut relay, socket, packet, now),
+        }
+    }
+}
+
+fn multicast_tunnel_packet(relay: &mut Relay, socket: &MdnsSocket, packet: Vec<u8>, now: Instant) {
+    let Ok(bytes) = relay.tunnel_to_local(packet, now) else {
+        return;
+    };
+
+    match socket.send_multicast(&bytes) {
+        Ok(()) => relay.record_multicast(&bytes, now),
+        Err(err) => warn!("multicast on the mDNS socket failed: {err}"),
+    }
+}
+
+fn receive_local_packets(
+    socket: &MdnsSocket,
+    events: &SyncSender<Event>,
+) -> anyhow::Result<Infallible> {
     let mut buf = [0; MAX_PACKET_SIZE];
 
     loop {
         let (len, from) = socket.recv(&mut buf).context("mDNS receive")?;
         debug!("local packet of {len} bytes from {from}");
 
-        let relayed = relay
-            .lock()
-            .expect("relay lock")
-            .from_local(&buf[..len], Instant::now());
-        if let Ok(bytes) = relayed {
-            writer.send(bytes);
-        }
-    }
-}
-
-/// Prefixes an I/O error with what was being done, keeping its kind.
-trait Context<T> {
-    fn context(self, what: impl Display) -> io::Result<T>;
-}
-
-impl<T> Context<T> for io::Result<T> {
-    fn context(self, what: impl Display) -> io::Result<T> {
-        self.map_err(|err| io::Error::new(err.kind(), format!("{what}: {err}")))
+        events
+            .send(Event::Local(buf[..len].to_vec()))
+            .context("the event thread has stopped")?;
     }
 }

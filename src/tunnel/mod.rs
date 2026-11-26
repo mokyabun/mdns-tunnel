@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use log::{info, warn};
 
-use frame::{Frame, HelloError, read_frame, read_hello, write_hello};
+use frame::{Frame, read_frame, read_hello, write_hello};
 pub use writer::TunnelWriter;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -102,7 +102,7 @@ impl Tunnel {
         let peer = peer_name(&stream);
 
         let id = match stream.try_clone() {
-            Ok(write_half) => self.writer.attach(write_half),
+            Ok(write_half) => self.writer.replace_connection(write_half),
             Err(err) => {
                 warn!("tunnel to {peer} unusable: {err}");
                 return;
@@ -110,9 +110,9 @@ impl Tunnel {
         };
         info!("tunnel up with {peer}");
 
-        let err = self.read_frames(&mut stream);
+        let err = self.read_until_error(&mut stream);
 
-        self.writer.detach(id);
+        self.writer.close_if_current(id);
         match err.kind() {
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
                 info!("tunnel to {peer} down: no frame within the idle timeout");
@@ -121,7 +121,7 @@ impl Tunnel {
         }
     }
 
-    fn read_frames(&self, stream: &mut TcpStream) -> io::Error {
+    fn read_until_error(&self, stream: &mut TcpStream) -> io::Error {
         loop {
             match read_frame(stream) {
                 Ok(Frame::Keepalive) => {}
@@ -142,13 +142,13 @@ impl Tunnel {
     }
 }
 
-fn connect(addr: SocketAddr, timeouts: Timeouts) -> Result<TcpStream, HelloError> {
+fn connect(addr: SocketAddr, timeouts: Timeouts) -> anyhow::Result<TcpStream> {
     let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)?;
     handshake(&mut stream, timeouts)?;
     Ok(stream)
 }
 
-fn handshake(stream: &mut TcpStream, timeouts: Timeouts) -> Result<(), HelloError> {
+fn handshake(stream: &mut TcpStream, timeouts: Timeouts) -> anyhow::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(timeouts.idle))?;
     stream.set_write_timeout(Some(timeouts.idle))?;
